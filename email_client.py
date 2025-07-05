@@ -6,15 +6,19 @@ import imaplib
 import poplib
 import email
 import smtplib
-from email.message import EmailMessage
-from email.header import decode_header
-from email.utils import parseaddr
-import time
+import shutil
+import re
 import threading
-
 import win32event
 import winerror
 import win32api
+from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from email.header import decode_header
+from email.utils import parseaddr
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget,
                              QTabWidget, QTreeWidget, QTreeWidgetItem, QSplitter,
@@ -43,7 +47,7 @@ if last_error == winerror.ERROR_ALREADY_EXISTS:
     sys.exit(1)
 
 
-class EmailAccountDialog(QDialog):
+class ComposeEmailDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("写邮件")
@@ -51,6 +55,11 @@ class EmailAccountDialog(QDialog):
         self.resize(600, 500)
 
         layout = QVBoxLayout(self)
+
+        # 发件人标签（只读）
+        self.from_label = QLabel()
+        layout.addWidget(QLabel("发件人:"))
+        layout.addWidget(self.from_label)
 
         # 收件人
         self.to_edit = QLineEdit()
@@ -90,6 +99,10 @@ class EmailAccountDialog(QDialog):
 
         self.attachment_path = None
 
+    def set_from_email(self, email):
+        """设置发件人邮箱"""
+        self.from_label.setText(email)
+
     def add_attachment(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择附件", "", "所有文件 (*.*)")
         if path:
@@ -104,6 +117,10 @@ class EmailAccountDialog(QDialog):
             "attachment": self.attachment_path
         }
 
+
+class AddAccountDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setWindowTitle("添加邮箱账户")
         self.setWindowIcon(QIcon("icon.ico"))
         self.resize(500, 300)
@@ -165,7 +182,6 @@ class EmailAccountDialog(QDialog):
         self.update_preset_settings("晏阳邮箱")
 
     def update_preset_settings(self, preset):
-        # 预设邮箱的配置信息
         preset_configs = {
             "晏阳邮箱": {
                 "imap": {"server": "yanyn.cn", "port": "143", "ssl": False},
@@ -193,10 +209,8 @@ class EmailAccountDialog(QDialog):
             }
         }
 
-        # 是否为自定义选项
         is_custom = preset == "自定义"
 
-        # 设置字段的可见性
         self.protocol_label.setVisible(is_custom)
         self.protocol_combo.setVisible(is_custom)
         self.server_label.setVisible(is_custom)
@@ -206,20 +220,14 @@ class EmailAccountDialog(QDialog):
         self.ssl_check.setVisible(is_custom)
 
         if not is_custom:
-            # 获取当前协议
             protocol = self.protocol_combo.currentText().lower()
-
-            # 更新配置
             config = preset_configs[preset][protocol]
             self.server_edit.setText(config["server"])
             self.port_edit.setText(str(config["port"]))
             self.ssl_check.setChecked(config["ssl"])
-
-            # 锁定协议选择为IMAP（因为大多数预设只支持IMAP）
             self.protocol_combo.setCurrentText("IMAP")
 
     def update_port_default(self, protocol):
-        # 只有在自定义模式下才更新端口
         if self.preset_combo.currentText() == "自定义":
             if protocol == "IMAP":
                 self.port_edit.setText("993" if self.ssl_check.isChecked() else "143")
@@ -238,12 +246,10 @@ class EmailAccountDialog(QDialog):
             "preset": self.preset_combo.currentText()
         }
 
+
 class EmailClient(QMainWindow):
     def __init__(self):
-        # 必须首先调用父类初始化
         super().__init__()
-
-        # 然后才能进行其他设置
         self.setWindowTitle("Yanyn Email 0.14.0")
         self.setWindowIcon(QIcon("icon.ico"))
         self.resize(1200, 800)
@@ -276,13 +282,11 @@ class EmailClient(QMainWindow):
 
     def set_azure_theme(self):
         palette = self.palette()
-
-        # 设置蔚蓝色调色板
         azure_color = QColor(0, 127, 255)
         light_azure = QColor(200, 230, 255)
         dark_azure = QColor(0, 80, 160)
 
-        palette.setColor(QPalette.ColorRole.Window, QColor(240, 248, 255))  # AliceBlue背景
+        palette.setColor(QPalette.ColorRole.Window, QColor(240, 248, 255))
         palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.black)
         palette.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.white)
         palette.setColor(QPalette.ColorRole.AlternateBase, light_azure)
@@ -296,19 +300,14 @@ class EmailClient(QMainWindow):
         palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
 
         self.setPalette(palette)
-
-        # 设置字体
-        font = QFont("Microsoft YaHei", 10)
-        self.setFont(font)
+        self.setFont(QFont("Microsoft YaHei", 10))
 
     def init_ui(self):
-        # 主窗口布局
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
         main_layout = QHBoxLayout(central_widget)
 
-        # 左侧账户和文件夹列表
+        # 左侧面板
         left_panel = QWidget()
         left_panel.setMaximumWidth(250)
         left_layout = QVBoxLayout(left_panel)
@@ -316,23 +315,27 @@ class EmailClient(QMainWindow):
         # 账户列表
         self.account_list = QListWidget()
         self.account_list.itemClicked.connect(self.switch_account)
-        left_layout.addWidget(QLabel("账户"))
-        left_layout.addWidget(self.account_list)
 
         # 文件夹列表
         self.folder_list = QListWidget()
         self.folder_list.itemClicked.connect(self.switch_folder)
-        left_layout.addWidget(QLabel("文件夹"))
-        left_layout.addWidget(self.folder_list)
 
-        # 添加账户按钮
+        # 账户操作按钮
+        account_buttons_layout = QHBoxLayout()
         self.add_account_btn = QPushButton("添加账户")
         self.add_account_btn.clicked.connect(self.add_account)
-        left_layout.addWidget(self.add_account_btn)
+        self.delete_account_btn = QPushButton("删除账户")
+        self.delete_account_btn.clicked.connect(self.delete_account)
+        account_buttons_layout.addWidget(self.add_account_btn)
+        account_buttons_layout.addWidget(self.delete_account_btn)
 
-        main_layout.addWidget(left_panel)
+        left_layout.addWidget(QLabel("账户"))
+        left_layout.addWidget(self.account_list)
+        left_layout.addWidget(QLabel("文件夹"))
+        left_layout.addWidget(self.folder_list)
+        left_layout.addLayout(account_buttons_layout)
 
-        # 右侧主区域
+        # 右侧面板
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
@@ -362,37 +365,29 @@ class EmailClient(QMainWindow):
 
         # 邮件列表和预览分割
         splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # 邮件列表
         self.email_list = QTreeWidget()
         self.email_list.setHeaderLabels(["发件人", "主题", "日期"])
         self.email_list.setColumnWidth(0, 200)
         self.email_list.setColumnWidth(1, 300)
         self.email_list.setColumnWidth(2, 150)
         self.email_list.itemClicked.connect(self.show_email)
-        splitter.addWidget(self.email_list)
 
         # 邮件预览
         self.email_preview = QTabWidget()
-
-        # 纯文本预览
         self.text_preview = QTextEdit()
         self.text_preview.setReadOnly(True)
         self.email_preview.addTab(self.text_preview, "文本")
-
-        # HTML预览
         self.html_preview = QWebEngineView()
         self.email_preview.addTab(self.html_preview, "HTML")
-
-        # 附件列表
         self.attachment_list = QListWidget()
         self.email_preview.addTab(self.attachment_list, "附件")
 
+        splitter.addWidget(self.email_list)
         splitter.addWidget(self.email_preview)
         splitter.setSizes([300, 400])
-
         right_layout.addWidget(splitter)
 
+        main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel)
 
         # 状态栏
@@ -409,39 +404,63 @@ class EmailClient(QMainWindow):
             self.switch_account()
 
     def add_account(self):
-        dialog = EmailAccountDialog(self)
+        dialog = AddAccountDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             account_info = dialog.get_account_info()
-
-            # 验证账户
             if not self.validate_account(account_info):
                 return
-
-            # 添加到账户列表
             self.accounts.append(account_info)
             self.settings.setValue("accounts", self.accounts)
+            self.load_accounts()
+
+    def delete_account(self):
+        selected_row = self.account_list.currentRow()
+        if selected_row < 0 or selected_row >= len(self.accounts):
+            QMessageBox.warning(self, "警告", "请先选择要删除的账户")
+            return
+
+        account_email = self.accounts[selected_row]['email']
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除账户 {account_email} 吗?\n此操作不可撤销!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        try:
+            del self.accounts[selected_row]
+            self.settings.setValue("accounts", self.accounts)
+
+            if self.current_account and self.current_account['email'] == account_email:
+                self.current_account = None
+                self.folder_list.clear()
+                self.email_list.clear()
+                self.text_preview.clear()
+                self.html_preview.setHtml("")
+                self.attachment_list.clear()
+
+            self.load_accounts()
+            QMessageBox.information(self, "成功", "账户已删除")
+        except Exception as e:
+            logging.error(f"删除账户失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"删除账户失败:\n{str(e)}")
             self.load_accounts()
 
     def validate_account(self, account_info):
         try:
             if account_info["protocol"] == "IMAP":
-                if account_info["ssl"]:
-                    mail = imaplib.IMAP4_SSL(account_info["server"], account_info["port"])
-                else:
-                    mail = imaplib.IMAP4(account_info["server"], account_info["port"])
-
+                mail = imaplib.IMAP4_SSL(account_info["server"], account_info["port"]) if account_info[
+                    "ssl"] else imaplib.IMAP4(account_info["server"], account_info["port"])
                 mail.login(account_info["email"], account_info["password"])
                 mail.logout()
             else:  # POP3
-                if account_info["ssl"]:
-                    mail = poplib.POP3_SSL(account_info["server"], account_info["port"])
-                else:
-                    mail = poplib.POP3(account_info["server"], account_info["port"])
-
+                mail = poplib.POP3_SSL(account_info["server"], account_info["port"]) if account_info[
+                    "ssl"] else poplib.POP3(account_info["server"], account_info["port"])
                 mail.user(account_info["email"])
                 mail.pass_(account_info["password"])
                 mail.quit()
-
             return True
         except Exception as e:
             logging.error(f"账户验证失败: {str(e)}")
@@ -450,7 +469,7 @@ class EmailClient(QMainWindow):
 
     def switch_account(self):
         selected_row = self.account_list.currentRow()
-        if selected_row >= 0 and selected_row < len(self.accounts):
+        if 0 <= selected_row < len(self.accounts):
             self.current_account = self.accounts[selected_row]
             self.update_folder_list()
             self.refresh_emails()
@@ -462,11 +481,9 @@ class EmailClient(QMainWindow):
 
         try:
             if self.current_account["protocol"] == "IMAP":
-                if self.current_account["ssl"]:
-                    mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"])
-                else:
-                    mail = imaplib.IMAP4(self.current_account["server"], self.current_account["port"])
-
+                mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
+                self.current_account["ssl"] else imaplib.IMAP4(self.current_account["server"],
+                                                               self.current_account["port"])
                 mail.login(self.current_account["email"], self.current_account["password"])
                 status, folders = mail.list()
                 mail.logout()
@@ -485,11 +502,7 @@ class EmailClient(QMainWindow):
         self.refresh_emails()
 
     def refresh_emails(self):
-        if not self.current_account:
-            return
-
-        # 使用工作线程获取邮件
-        if self.worker_thread and self.worker_thread.isRunning():
+        if not self.current_account or (self.worker_thread and self.worker_thread.isRunning()):
             return
 
         self.worker_thread = threading.Thread(target=self.fetch_emails_thread)
@@ -500,61 +513,47 @@ class EmailClient(QMainWindow):
             folder = self.folder_list.currentItem().text() if self.folder_list.currentItem() else "INBOX"
 
             if self.current_account["protocol"] == "IMAP":
-                if self.current_account["ssl"]:
-                    mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"])
-                else:
-                    mail = imaplib.IMAP4(self.current_account["server"], self.current_account["port"])
-
+                mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
+                self.current_account["ssl"] else imaplib.IMAP4(self.current_account["server"],
+                                                               self.current_account["port"])
                 mail.login(self.current_account["email"], self.current_account["password"])
                 mail.select(folder)
 
                 status, messages = mail.search(None, "ALL")
                 if status == "OK":
-                    email_ids = messages[0].split()
                     emails = []
-
-                    for email_id in reversed(email_ids):  # 从最新开始
+                    for email_id in reversed(messages[0].split()):
                         status, msg_data = mail.fetch(email_id, "(RFC822)")
                         if status == "OK":
-                            raw_email = msg_data[0][1]
-                            emails.append(raw_email)
+                            emails.append(msg_data[0][1])
 
                     with QMutexLocker(self.email_mutex):
                         self.emails = emails
-
-                    # 更新UI
                     self.update_email_list_signal.emit_signal()
 
                 mail.logout()
             else:  # POP3
-                if self.current_account["ssl"]:
-                    mail = poplib.POP3_SSL(self.current_account["server"], self.current_account["port"])
-                else:
-                    mail = poplib.POP3(self.current_account["server"], self.current_account["port"])
-
+                mail = poplib.POP3_SSL(self.current_account["server"], self.current_account["port"]) if \
+                self.current_account["ssl"] else poplib.POP3(self.current_account["server"],
+                                                             self.current_account["port"])
                 mail.user(self.current_account["email"])
                 mail.pass_(self.current_account["password"])
 
-                num_messages = len(mail.list()[1])
                 emails = []
-
-                for i in range(num_messages, max(0, num_messages - 50), -1):  # 获取最新的50封
+                num_messages = len(mail.list()[1])
+                for i in range(num_messages, max(0, num_messages - 50), -1):
                     response, lines, octets = mail.retr(i)
-                    raw_email = b"\n".join(lines)
-                    emails.append(raw_email)
+                    emails.append(b"\n".join(lines))
 
                 with QMutexLocker(self.email_mutex):
                     self.emails = emails
-
-                # 更新UI
                 self.update_email_list_signal.emit_signal()
-
                 mail.quit()
         except Exception as e:
             logging.error(f"获取邮件失败: {str(e)}")
             self.status_bar.showMessage(f"错误: {str(e)}", 5000)
         finally:
-            self.worker_thread = None  # 确保线程引用被清除
+            self.worker_thread = None
 
     def update_email_list(self):
         self.email_list.clear()
@@ -563,20 +562,13 @@ class EmailClient(QMainWindow):
             for raw_email in self.emails:
                 try:
                     msg = email.message_from_bytes(raw_email)
+                    from_ = parseaddr(msg.get("From", ""))[1] or "未知发件人"
 
-                    # 解析发件人
-                    from_ = parseaddr(msg.get("From", ""))[1]
-                    if not from_:
-                        from_ = "未知发件人"
-
-                    # 解析主题
                     subject, encoding = decode_header(msg.get("Subject", ""))[0]
                     if isinstance(subject, bytes):
                         subject = subject.decode(encoding if encoding else "utf-8", errors="replace")
-                    if not subject:
-                        subject = "(无主题)"
+                    subject = subject or "(无主题)"
 
-                    # 解析日期
                     date = msg.get("Date", "未知日期")
 
                     item = QTreeWidgetItem([from_, subject, date])
@@ -602,40 +594,22 @@ class EmailClient(QMainWindow):
         html_content = ""
         if msg.is_multipart():
             for part in msg.walk():
-                content_type = part.get_content_type()
-                if content_type == "text/html":
+                if part.get_content_type() == "text/html":
                     payload = part.get_payload(decode=True)
                     charset = part.get_content_charset() or "utf-8"
                     html_content += payload.decode(charset, errors="replace")
-        else:
-            if msg.get_content_type() == "text/html":
-                payload = msg.get_payload(decode=True)
-                charset = msg.get_content_charset() or "utf-8"
-                html_content = payload.decode(charset, errors="replace")
+        elif msg.get_content_type() == "text/html":
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            html_content = payload.decode(charset, errors="replace")
 
         # 如果没有HTML内容，则使用纯文本转换为HTML
         if not html_content:
-            text_content = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    content_type = part.get_content_type()
-                    if content_type == "text/plain":
-                        payload = part.get_payload(decode=True)
-                        charset = part.get_content_charset() or "utf-8"
-                        text_content += payload.decode(charset, errors="replace")
-            else:
-                payload = msg.get_payload(decode=True)
-                charset = msg.get_content_charset() or "utf-8"
-                text_content = payload.decode(charset, errors="replace")
-
-            # 将纯文本转换为HTML格式
+            text_content = self.get_text_content(msg)
             html_content = f"<pre style='font-family: sans-serif; white-space: pre-wrap;'>{text_content}</pre>"
 
-        # 设置HTML为默认显示
         self.html_preview.setHtml(html_content)
         self.email_preview.setCurrentIndex(1)  # 切换到HTML标签页
-
-        # 同时更新纯文本预览（保持同步）
         self.text_preview.setPlainText(self.html_to_plaintext(html_content))
 
         # 显示附件
@@ -643,18 +617,35 @@ class EmailClient(QMainWindow):
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_filename():
-                    filename = part.get_filename()
-                    self.attachment_list.addItem(filename)
+                    self.attachment_list.addItem(part.get_filename())
+
+    def get_text_content(self, msg):
+        text_content = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or "utf-8"
+                    text_content += payload.decode(charset, errors="replace")
+        else:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            text_content = payload.decode(charset, errors="replace")
+        return text_content
 
     def html_to_plaintext(self, html):
-        """简单将HTML转换为纯文本"""
-        import re
-        text = re.sub('<[^<]+?>', '', html)  # 移除HTML标签
-        text = re.sub('\n\s*\n', '\n\n', text)  # 压缩多个空行
+        text = re.sub('<[^<]+?>', '', html)
+        text = re.sub(r'\n\s*\n', '\n\n', text)
         return text.strip()
 
     def compose_email(self):
-        dialog = EmailAccountDialog(self)  # 修改为正确的类名
+        if not self.current_account:
+            QMessageBox.warning(self, "警告", "请先选择发件邮箱账户")
+            return
+
+        dialog = ComposeEmailDialog(self)
+        dialog.set_from_email(self.current_account["email"])
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             email_data = dialog.get_email_data()
             self.send_email(email_data)
@@ -665,35 +656,29 @@ class EmailClient(QMainWindow):
                 QMessageBox.warning(self, "警告", "请先选择发件邮箱账户")
                 return
 
-            # 创建MIME邮件
             msg = MIMEMultipart()
             msg["From"] = self.current_account["email"]
             msg["To"] = email_data["to"]
             msg["Subject"] = email_data["subject"]
 
-            # 添加纯文本和HTML内容
             text_part = MIMEText(email_data["content"], "plain", "utf-8")
             html_part = MIMEText(email_data["content"], "html", "utf-8")
             msg.attach(text_part)
             msg.attach(html_part)
 
-            # 添加附件
             if email_data["attachment"]:
                 with open(email_data["attachment"], "rb") as f:
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        f"attachment; filename={os.path.basename(email_data['attachment'])}",
-                    )
+                    part.add_header("Content-Disposition",
+                                    f"attachment; filename={os.path.basename(email_data['attachment'])}")
                     msg.attach(part)
 
-            # 发送邮件
             smtp_server = self.get_smtp_server(self.current_account)
             with smtplib.SMTP_SSL(smtp_server["host"], smtp_server["port"]) if smtp_server["ssl"] else smtplib.SMTP(
                     smtp_server["host"], smtp_server["port"]) as server:
-                if not smtp_server["ssl"] and smtp_server["port"] == 587:  # STARTTLS
+                if not smtp_server["ssl"] and smtp_server["port"] == 587:
                     server.starttls()
                 server.login(self.current_account["email"], self.current_account["password"])
                 server.send_message(msg)
@@ -704,7 +689,6 @@ class EmailClient(QMainWindow):
             QMessageBox.critical(self, "错误", f"发送邮件失败:\n{str(e)}")
 
     def get_smtp_server(self, account):
-        """获取SMTP服务器配置"""
         preset_configs = {
             "晏阳邮箱": {"host": "yanyn.cn", "port": 25, "ssl": False},
             "QQ邮箱": {"host": "smtp.qq.com", "port": 465, "ssl": True},
@@ -714,11 +698,11 @@ class EmailClient(QMainWindow):
             "Gmail": {"host": "smtp.gmail.com", "port": 587, "ssl": True}
         }
 
-        if account.get("preset") in preset_configs:
-            return preset_configs[account["preset"]]
-        else:
-            # 默认配置
-            return {"host": account["server"], "port": account["port"], "ssl": account["ssl"]}
+        return preset_configs.get(account.get("preset"), {
+            "host": account["server"],
+            "port": account["port"],
+            "ssl": account["ssl"]
+        })
 
     def reply_email(self):
         item = self.email_list.currentItem()
@@ -729,25 +713,17 @@ class EmailClient(QMainWindow):
         raw_email = item.data(0, Qt.ItemDataRole.UserRole)
         msg = email.message_from_bytes(raw_email)
 
-        dialog = EmailAccountDialog(self)
+        dialog = ComposeEmailDialog(self)
         dialog.setWindowTitle("回复邮件")
+        dialog.set_from_email(self.current_account["email"])
+        dialog.to_edit.setText(parseaddr(msg.get("From", ""))[1])
+        dialog.subject_edit.setText(f"Re: {msg.get('Subject', '')}")
 
-        # 设置收件人
-        from_ = parseaddr(msg.get("From", ""))[1]
-        dialog.to_edit.setText(from_)
-
-        # 设置主题
-        subject = msg.get("Subject", "")
-        dialog.subject_edit.setText(f"Re: {subject}")
-
-        # 设置引用内容
         text_content = self.get_text_content(msg)
-        quoted_content = f"\n\n---------- 原邮件 ----------\n{text_content}"
-        dialog.content_edit.setPlainText(quoted_content)
+        dialog.content_edit.setPlainText(f"\n\n---------- 原邮件 ----------\n{text_content}")
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            email_data = dialog.get_email_data()
-            self.send_email(email_data)
+            self.send_email(dialog.get_email_data())
 
     def forward_email(self):
         item = self.email_list.currentItem()
@@ -758,17 +734,13 @@ class EmailClient(QMainWindow):
         raw_email = item.data(0, Qt.ItemDataRole.UserRole)
         msg = email.message_from_bytes(raw_email)
 
-        dialog = EmailAccountDialog(self)
+        dialog = ComposeEmailDialog(self)
         dialog.setWindowTitle("转发邮件")
+        dialog.set_from_email(self.current_account["email"])
+        dialog.subject_edit.setText(f"Fwd: {msg.get('Subject', '')}")
 
-        # 设置主题
-        subject = msg.get("Subject", "")
-        dialog.subject_edit.setText(f"Fwd: {subject}")
-
-        # 设置转发内容
         text_content = self.get_text_content(msg)
-        forwarded_content = f"\n\n---------- 转发邮件 ----------\n{text_content}"
-        dialog.content_edit.setPlainText(forwarded_content)
+        dialog.content_edit.setPlainText(f"\n\n---------- 转发邮件 ----------\n{text_content}")
 
         # 添加附件
         if msg.is_multipart():
@@ -786,10 +758,8 @@ class EmailClient(QMainWindow):
                     dialog.attachment_label.setText(filename)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            email_data = dialog.get_email_data()
-            self.send_email(email_data)
+            self.send_email(dialog.get_email_data())
 
-            # 清理临时附件
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
 
@@ -818,17 +788,14 @@ class EmailClient(QMainWindow):
             message_id = msg.get("Message-ID", "")
 
             if self.current_account["protocol"] == "IMAP":
-                if self.current_account["ssl"]:
-                    mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"])
-                else:
-                    mail = imaplib.IMAP4(self.current_account["server"], self.current_account["port"])
-
+                mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
+                self.current_account["ssl"] else imaplib.IMAP4(self.current_account["server"],
+                                                               self.current_account["port"])
                 mail.login(self.current_account["email"], self.current_account["password"])
 
                 folder = self.folder_list.currentItem().text() if self.folder_list.currentItem() else "INBOX"
                 mail.select(folder)
 
-                # 搜索并删除邮件
                 status, messages = mail.search(None, f'(HEADER Message-ID "{message_id}")')
                 if status == "OK" and messages[0]:
                     mail.store(messages[0].split()[0], '+FLAGS', '\\Deleted')
@@ -836,63 +803,32 @@ class EmailClient(QMainWindow):
 
                 mail.logout()
             else:  # POP3
-                if self.current_account["ssl"]:
-                    mail = poplib.POP3_SSL(self.current_account["server"], self.current_account["port"])
-                else:
-                    mail = poplib.POP3(self.current_account["server"], self.current_account["port"])
-
+                mail = poplib.POP3_SSL(self.current_account["server"], self.current_account["port"]) if \
+                self.current_account["ssl"] else poplib.POP3(self.current_account["server"],
+                                                             self.current_account["port"])
                 mail.user(self.current_account["email"])
                 mail.pass_(self.current_account["password"])
-
-                # POP3通常不支持选择性删除，这里简单实现删除最新邮件
-                num_messages = len(mail.list()[1])
-                mail.dele(num_messages)
-
+                mail.dele(len(mail.list()[1]))
                 mail.quit()
 
-            # 从UI中移除
             self.email_list.takeTopLevelItem(self.email_list.indexOfTopLevelItem(item))
             QMessageBox.information(self, "成功", "邮件已删除")
-
         except Exception as e:
             logging.error(f"删除邮件失败: {str(e)}")
             QMessageBox.critical(self, "错误", f"删除邮件失败:\n{str(e)}")
 
-    def get_text_content(self, msg):
-        """获取邮件的纯文本内容"""
-        text_content = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                if content_type == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    charset = part.get_content_charset() or "utf-8"
-                    text_content += payload.decode(charset, errors="replace")
-        else:
-            payload = msg.get_payload(decode=True)
-            charset = msg.get_content_charset() or "utf-8"
-            text_content = payload.decode(charset, errors="replace")
-
-        return text_content
-
     def check_new_emails(self):
-        # 定时检查新邮件
         if self.current_account:
             self.refresh_emails()
 
     def closeEvent(self, event):
-        # 保存设置
         self.settings.sync()
         event.accept()
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # 设置应用程序样式
     app.setStyle("Fusion")
-
     client = EmailClient()
     client.show()
-
     sys.exit(app.exec())
