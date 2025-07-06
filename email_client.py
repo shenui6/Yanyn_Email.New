@@ -47,6 +47,19 @@ if last_error == winerror.ERROR_ALREADY_EXISTS:
     sys.exit(1)
 
 
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("设置")
+        self.setWindowIcon(QIcon("icon.ico"))
+        self.resize(400, 300)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("设置功能正在开发中..."))
+        # 这里可以添加具体的设置选项
+
+
 class ComposeEmailDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -129,7 +142,7 @@ class AddAccountDialog(QDialog):
 
         # 预设邮箱选择
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["晏阳邮箱", "QQ邮箱", "163邮箱", "126邮箱", "Outlook", "Gmail", "自定义"])
+        self.preset_combo.addItems(["晏阳邮箱", "163邮箱", "126邮箱", "Outlook", "Gmail", "自定义"])
         self.preset_combo.currentTextChanged.connect(self.update_preset_settings)
         layout.addRow("预设邮箱:", self.preset_combo)
 
@@ -186,10 +199,7 @@ class AddAccountDialog(QDialog):
             "晏阳邮箱": {
                 "imap": {"server": "yanyn.cn", "port": "143", "ssl": False},
                 "pop3": {"server": "yanyn.cn", "port": "110", "ssl": False}
-            },
-            "QQ邮箱": {
-                "imap": {"server": "imap.qq.com", "port": "993", "ssl": True},
-                "pop3": {"server": "pop.qq.com", "port": "995", "ssl": True}
+
             },
             "163邮箱": {
                 "imap": {"server": "imap.163.com", "port": "993", "ssl": True},
@@ -248,9 +258,125 @@ class AddAccountDialog(QDialog):
 
 
 class EmailClient(QMainWindow):
+
+    def cancel_operations(self):
+        """安全地取消正在进行的操作"""
+        with self.thread_lock:
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.thread_cancel = True
+                # 如果是IMAP操作，尝试优雅地关闭连接
+                if hasattr(self, 'imap_conn') and self.imap_conn:
+                    try:
+                        self.imap_conn.logout()
+                    except:
+                        pass
+                # 如果是POP3操作
+                if hasattr(self, 'pop3_conn') and self.pop3_conn:
+                    try:
+                        self.pop3_conn.quit()
+                    except:
+                        pass
+
+                # 等待线程结束，但不要无限等待
+                self.worker_thread.join(timeout=2.0)
+                if self.worker_thread.is_alive():
+                    logging.warning("线程未能正常终止")
+
+                self.thread_cancel = False
+                self.worker_thread = None
+
+    def fetch_emails_thread(self):
+        try:
+            with self.thread_lock:
+                if self.thread_cancel:
+                    return
+
+                self.thread_running = True
+                current_folder = self.folder_list.currentItem().text() if self.folder_list.currentItem() else "收件箱"
+                folder_mapping = {
+                    "收件箱": "INBOX",
+                    "已发送": "Sent",
+                    "草稿箱": "Drafts",
+                    "垃圾邮件": "Trash"
+                }
+                folder = folder_mapping.get(current_folder, current_folder)
+
+                if self.current_account["protocol"] == "IMAP":
+                    self.imap_conn = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
+                        self.current_account["ssl"] else imaplib.IMAP4(self.current_account["server"],
+                                                                       self.current_account["port"])
+                    self.imap_conn.login(self.current_account["email"], self.current_account["password"])
+                    self.imap_conn.select(folder)
+
+                    status, messages = self.imap_conn.search(None, "ALL")
+                    if status == "OK" and not self.thread_cancel:
+                        emails = []
+                        for email_id in reversed(messages[0].split()):
+                            if self.thread_cancel:
+                                break
+
+                            status, msg_data = self.imap_conn.fetch(email_id, "(RFC822)")
+                            if status == "OK":
+                                emails.append(msg_data[0][1])
+
+                        with QMutexLocker(self.email_mutex):
+                            self.emails = emails
+                        self.update_email_list_signal.emit_signal()
+
+                    if not self.thread_cancel:
+                        self.imap_conn.logout()
+                    self.imap_conn = None
+
+                else:  # POP3
+                    self.pop3_conn = poplib.POP3_SSL(self.current_account["server"], self.current_account["port"]) if \
+                        self.current_account["ssl"] else poplib.POP3(self.current_account["server"],
+                                                                     self.current_account["port"])
+                    self.pop3_conn.user(self.current_account["email"])
+                    self.pop3_conn.pass_(self.current_account["password"])
+
+                    if not self.thread_cancel:
+                        emails = []
+                        num_messages = len(self.pop3_conn.list()[1])
+                        for i in range(num_messages, max(0, num_messages - 50), -1):
+                            if self.thread_cancel:
+                                break
+
+                            response, lines, octets = self.pop3_conn.retr(i)
+                            emails.append(b"\n".join(lines))
+
+                        with QMutexLocker(self.email_mutex):
+                            self.emails = emails
+                        self.update_email_list_signal.emit_signal()
+
+                    if not self.thread_cancel:
+                        self.pop3_conn.quit()
+                    self.pop3_conn = None
+
+        except Exception as e:
+            if not self.thread_cancel:  # 只有非取消导致的错误才记录
+                logging.error(f"获取邮件失败: {str(e)}")
+                self.status_bar.showMessage(f"错误: {str(e)}", 5000)
+        finally:
+            with self.thread_lock:
+                self.thread_running = False
+                self.worker_thread = None
+                # 确保连接被关闭
+                if hasattr(self, 'imap_conn') and self.imap_conn:
+                    try:
+                        self.imap_conn.logout()
+                    except:
+                        pass
+                    self.imap_conn = None
+                if hasattr(self, 'pop3_conn') and self.pop3_conn:
+                    try:
+                        self.pop3_conn.quit()
+                    except:
+                        pass
+                    self.pop3_conn = None
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Yanyn Email 0.14.0")
+        self.setWindowTitle("Yanyn Email 0.14.1")
         self.setWindowIcon(QIcon("icon.ico"))
         self.resize(1200, 800)
 
@@ -271,9 +397,14 @@ class EmailClient(QMainWindow):
 
         # 初始化UI
         self.init_ui()
+        self.thread_lock = threading.Lock()
+        self.thread_running = False
+        self.thread_cancel = False
+        self.thread_lock = threading.Lock()
 
-        # 加载账户
-        self.load_accounts()
+        # 现在可以安全地加载账户了
+        if hasattr(self, 'account_list'):  # 确保 account_list 已初始化
+            self.load_accounts()
 
         # 启动定时检查新邮件
         self.timer = QTimer()
@@ -303,6 +434,16 @@ class EmailClient(QMainWindow):
         self.setFont(QFont("Microsoft YaHei", 10))
 
     def init_ui(self):
+        # 确保在创建新组件前清除旧组件
+        if hasattr(self, 'account_list'):
+            self.account_list.deleteLater()
+        if hasattr(self, 'folder_list'):
+            self.folder_list.deleteLater()
+        if hasattr(self, 'email_list'):
+            self.email_list.deleteLater()
+        if hasattr(self, 'email_preview'):
+            self.email_preview.deleteLater()
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
@@ -311,14 +452,6 @@ class EmailClient(QMainWindow):
         left_panel = QWidget()
         left_panel.setMaximumWidth(250)
         left_layout = QVBoxLayout(left_panel)
-
-        # 账户列表
-        self.account_list = QListWidget()
-        self.account_list.itemClicked.connect(self.switch_account)
-
-        # 文件夹列表
-        self.folder_list = QListWidget()
-        self.folder_list.itemClicked.connect(self.switch_folder)
 
         # 账户操作按钮
         account_buttons_layout = QHBoxLayout()
@@ -329,11 +462,19 @@ class EmailClient(QMainWindow):
         account_buttons_layout.addWidget(self.add_account_btn)
         account_buttons_layout.addWidget(self.delete_account_btn)
 
-        left_layout.addWidget(QLabel("账户"))
+        # 账户列表
+        self.account_list = QListWidget()
+        self.account_list.itemClicked.connect(self.switch_account)
+
+        # 文件夹列表
+        self.folder_list = QListWidget()
+        self.folder_list.itemClicked.connect(self.switch_folder)
+
+        left_layout.addWidget(QLabel("邮箱账户"))
         left_layout.addWidget(self.account_list)
-        left_layout.addWidget(QLabel("文件夹"))
-        left_layout.addWidget(self.folder_list)
         left_layout.addLayout(account_buttons_layout)
+        left_layout.addWidget(QLabel("邮箱文件夹"))
+        left_layout.addWidget(self.folder_list)
 
         # 右侧面板
         right_panel = QWidget()
@@ -360,6 +501,11 @@ class EmailClient(QMainWindow):
         self.delete_btn = QAction(QIcon.fromTheme("edit-delete"), "删除", self)
         self.delete_btn.triggered.connect(self.delete_email)
         toolbar.addAction(self.delete_btn)
+
+        # 在工具栏添加设置按钮
+        self.settings_btn = QAction(QIcon.fromTheme("preferences-system"), "设置", self)
+        self.settings_btn.triggered.connect(self.show_settings)
+        toolbar.addAction(self.settings_btn)
 
         right_layout.addWidget(toolbar)
 
@@ -393,6 +539,10 @@ class EmailClient(QMainWindow):
         # 状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+    def show_settings(self):
+        dialog = SettingsDialog(self)
+        dialog.exec()
 
     def load_accounts(self):
         self.account_list.clear()
@@ -468,49 +618,94 @@ class EmailClient(QMainWindow):
             return False
 
     def switch_account(self):
+        # 先取消任何正在运行的线程
+        self.cancel_operations()
+
         selected_row = self.account_list.currentRow()
         if 0 <= selected_row < len(self.accounts):
             self.current_account = self.accounts[selected_row]
-            self.update_folder_list()
-            self.refresh_emails()
+            try:
+                self.update_folder_list()
+                self.refresh_emails()
+            except Exception as e:
+                logging.error(f"切换账户错误: {str(e)}")
+                QMessageBox.critical(self, "错误", f"切换账户时发生错误:\n{str(e)}")
 
     def update_folder_list(self):
         self.folder_list.clear()
         if not self.current_account:
+            self.status_bar.showMessage("未选择邮箱账户", 3000)
             return
 
         try:
             if self.current_account["protocol"] == "IMAP":
-                mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
-                self.current_account["ssl"] else imaplib.IMAP4(self.current_account["server"],
-                                                               self.current_account["port"])
+                if self.current_account["ssl"]:
+                    mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"])
+                else:
+                    mail = imaplib.IMAP4(self.current_account["server"], self.current_account["port"])
+
                 mail.login(self.current_account["email"], self.current_account["password"])
                 status, folders = mail.list()
                 mail.logout()
 
                 if status == "OK":
+                    # 文件夹名称映射为中文
+                    folder_mapping = {
+                        "INBOX": "收件箱",
+                        "Sent": "已发送",
+                        "Drafts": "草稿箱",
+                        "Trash": "垃圾邮件",
+                        "Junk": "垃圾邮件",
+                        "Spam": "垃圾邮件",
+                        "Archive": "存档"
+                    }
+
                     for folder in folders:
-                        folder_name = folder.decode().split('"')[-2]
-                        self.folder_list.addItem(folder_name)
-            else:  # POP3
+                        folder_info = folder.decode()
+                        if '"/"' in folder_info:
+                            folder_name = folder_info.split('"/"')[-1].strip('"')
+                        else:
+                            folder_name = folder_info.split()[-1].strip('"')
+
+                        # 使用中文名称，如果没有映射则使用原名
+                        display_name = folder_mapping.get(folder_name, folder_name)
+                        if folder_name:
+                            self.folder_list.addItem(display_name)
+            else:  # POP3协议
                 self.folder_list.addItem("收件箱")
+
         except Exception as e:
             logging.error(f"更新文件夹列表失败: {str(e)}")
             self.status_bar.showMessage(f"错误: {str(e)}", 5000)
 
     def switch_folder(self):
-        self.refresh_emails()
+        # 先取消任何正在运行的线程
+        self.cancel_operations()
+        try:
+            self.refresh_emails()
+        except Exception as e:
+            logging.error(f"切换文件夹错误: {str(e)}")
+            QMessageBox.critical(self, "错误", f"切换文件夹时发生错误:\n{str(e)}")
 
     def refresh_emails(self):
-        if not self.current_account or (self.worker_thread and self.worker_thread.isRunning()):
-            return
+        with self.thread_lock:
+            if not self.current_account or (self.worker_thread and self.worker_thread.isRunning()):
+                return
 
-        self.worker_thread = threading.Thread(target=self.fetch_emails_thread)
-        self.worker_thread.start()
+            self.worker_thread = threading.Thread(target=self.fetch_emails_thread)
+            self.worker_thread.start()
 
     def fetch_emails_thread(self):
         try:
-            folder = self.folder_list.currentItem().text() if self.folder_list.currentItem() else "INBOX"
+            # 获取当前文件夹名称，并映射回英文名称用于IMAP操作
+            current_folder = self.folder_list.currentItem().text() if self.folder_list.currentItem() else "收件箱"
+            folder_mapping = {
+                "收件箱": "INBOX",
+                "已发送": "Sent",
+                "草稿箱": "Drafts",
+                "垃圾邮件": "Trash"
+            }
+            folder = folder_mapping.get(current_folder, current_folder)
 
             if self.current_account["protocol"] == "IMAP":
                 mail = imaplib.IMAP4_SSL(self.current_account["server"], self.current_account["port"]) if \
@@ -553,7 +748,8 @@ class EmailClient(QMainWindow):
             logging.error(f"获取邮件失败: {str(e)}")
             self.status_bar.showMessage(f"错误: {str(e)}", 5000)
         finally:
-            self.worker_thread = None
+            with self.thread_lock:
+                self.worker_thread = None
 
     def update_email_list(self):
         self.email_list.clear()
