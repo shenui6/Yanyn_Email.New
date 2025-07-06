@@ -456,26 +456,32 @@ class EmailClient(QMainWindow):
         palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
         self.setPalette(palette)
 
+
+
     def set_dark_theme(self):
         """设置深色主题"""
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
         palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-        palette.setColor(QPalette.ColorRole.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(25, 25, 25))
         palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
         palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
         palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
         palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
         palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+
+        # 设置链接颜色
+        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+
         self.setPalette(palette)
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Yanyn Email 0.14.1")
+        self.setWindowTitle("Yanyn Email 0.14.3")
         self.setWindowIcon(QIcon("icon.ico"))
         self.resize(1200, 800)
 
@@ -649,6 +655,50 @@ class EmailClient(QMainWindow):
         # 状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        # 设置全局圆角样式
+        self.setStyleSheet("""
+            /* 圆角按钮 */
+            QPushButton {
+                border-radius: 8px;
+                padding: 6px 12px;
+                background: #4a90e2;
+                color: white;
+            }
+
+            /* 圆角输入框 */
+            QLineEdit, QTextEdit {
+                border-radius: 6px;
+                border: 1px solid #ddd;
+                padding: 5px;
+            }
+
+            /* 圆角列表 */
+            QListWidget, QTreeWidget {
+                border-radius: 6px;
+                border: 1px solid #eee;
+            }
+
+            /* 卡片式分组框 */
+            QGroupBox {
+                border-radius: 8px;
+                border: 1px solid #ddd;
+                margin-top: 10px;
+            }
+        """)
+
+        # 修改布局间距
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        # 为工具栏添加阴影
+        toolbar.setStyleSheet("""
+            QToolBar {
+                background: white;
+                border-radius: 8px;
+                border: 1px solid #ddd;
+            }
+        """)
 
     def show_settings(self):
         dialog = SettingsDialog(self)
@@ -1005,9 +1055,8 @@ class EmailClient(QMainWindow):
     def get_smtp_server(self, account):
         preset_configs = {
             "晏阳邮箱": {"host": "yanyn.cn", "port": 25, "ssl": False},
-            "QQ邮箱": {"host": "smtp.qq.com", "port": 465, "ssl": True},
             "163邮箱": {"host": "smtp.163.com", "port": 465, "ssl": True},
-            "126邮箱": {"host": "smtp.126.com", "port": 465, "ssl": True},
+            "126邮箱": {"host": "smtp.126.com", "port": 25, "ssl": False},
             "Outlook": {"host": "smtp.office365.com", "port": 587, "ssl": True},
             "Gmail": {"host": "smtp.gmail.com", "port": 587, "ssl": True}
         }
@@ -1159,10 +1208,10 @@ class EmailClient(QMainWindow):
         tray_menu = QMenu()
 
         show_action = QAction("显示窗口", self)
-        show_action.triggered.connect(self.show)
+        show_action.triggered.connect(self.show_normal)
 
         exit_action = QAction("退出", self)
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self.quit_application)  # 修改这里
 
         tray_menu.addAction(show_action)
         tray_menu.addSeparator()
@@ -1170,6 +1219,17 @@ class EmailClient(QMainWindow):
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
+
+    def show_normal(self):
+        """从托盘恢复窗口"""
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
+        self.activateWindow()
+
+    def quit_application(self):
+        """完全退出应用程序"""
+        self.tray_icon.hide()  # 隐藏托盘图标
+        QApplication.quit()  # 退出应用
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
