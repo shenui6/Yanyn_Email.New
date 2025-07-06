@@ -262,8 +262,8 @@ class AddAccountDialog(QDialog):
                 "pop3": {"server": "pop.163.com", "port": "995", "ssl": True}
             },
             "126邮箱": {
-                "imap": {"server": "imap.126.com", "port": "993", "ssl": True},
-                "pop3": {"server": "pop.126.com", "port": "995", "ssl": True}
+                "imap": {"server": "imap.126.com", "port": "25", "ssl": False},
+                "pop3": {"server": "pop.126.com", "port": "110", "ssl": False}
             },
             "Outlook": {
                 "imap": {"server": "outlook.office365.com", "port": "993", "ssl": True},
