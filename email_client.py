@@ -181,6 +181,7 @@ class AddAccountDialog(QDialog):
         self.ssl_check.setChecked(True)
         layout.addRow(self.ssl_check)
 
+
         # 按钮
         self.button_box = QHBoxLayout()
         self.ok_button = QPushButton("确定")
