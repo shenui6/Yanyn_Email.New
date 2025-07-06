@@ -12,6 +12,7 @@ import threading
 import win32event
 import winerror
 import win32api
+import qtawesome as qta
 from email.message import EmailMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,7 +24,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget,
                              QTabWidget, QTreeWidget, QTreeWidgetItem, QSplitter,
                              QToolBar, QStatusBar, QDialog, QFormLayout, QMessageBox,
-                             QFileDialog, QComboBox, QCheckBox)
+                             QFileDialog, QComboBox, QCheckBox, QGroupBox, QRadioButton,
+                             QDialogButtonBox, QSystemTrayIcon, QMenu, QStyle)
 from PyQt6.QtCore import Qt, QSettings, QStandardPaths, QTimer, QMutex, QMutexLocker
 from PyQt6.QtGui import QIcon, QColor, QPalette, QTextCursor, QAction, QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -47,17 +49,70 @@ if last_error == winerror.ERROR_ALREADY_EXISTS:
     sys.exit(1)
 
 
-
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setWindowIcon(QIcon("icon.ico"))
+        self.setWindowIcon(QIcon("icon.ico"))  # 添加设置图标
         self.resize(400, 300)
 
+        # 使用垂直布局
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("设置功能正在开发中..."))
-        # 这里可以添加具体的设置选项
+
+        # 配色方案选择
+        self.theme_group = QGroupBox("配色方案")
+        theme_layout = QVBoxLayout()
+
+        self.theme_azure = QRadioButton("蔚蓝色主题 (默认)")
+        self.theme_light = QRadioButton("浅色主题")
+        self.theme_dark = QRadioButton("深色主题")
+
+        # 设置当前选中的主题
+        current_theme = self.parent().settings.value("theme", "azure")
+        if current_theme == "azure":
+            self.theme_azure.setChecked(True)
+        elif current_theme == "light":
+            self.theme_light.setChecked(True)
+        else:
+            self.theme_dark.setChecked(True)
+
+        theme_layout.addWidget(self.theme_azure)
+        theme_layout.addWidget(self.theme_light)
+        theme_layout.addWidget(self.theme_dark)
+        self.theme_group.setLayout(theme_layout)
+
+        # 托盘选项
+        self.tray_group = QGroupBox("系统托盘")
+        tray_layout = QVBoxLayout()
+
+        self.minimize_to_tray = QCheckBox("最小化到托盘")
+        self.minimize_to_tray.setChecked(self.parent().settings.value("minimize_to_tray", True, type=bool))
+
+        tray_layout.addWidget(self.minimize_to_tray)
+        self.tray_group.setLayout(tray_layout)
+
+        # 按钮
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+
+        # 添加到主布局
+        layout.addWidget(self.theme_group)
+        layout.addWidget(self.tray_group)
+        layout.addWidget(self.button_box)
+
+    def get_settings(self):
+        """返回设置选项"""
+        theme = "azure"
+        if self.theme_light.isChecked():
+            theme = "light"
+        elif self.theme_dark.isChecked():
+            theme = "dark"
+
+        return {
+            "theme": theme,
+            "minimize_to_tray": self.minimize_to_tray.isChecked()
+        }
 
 
 class ComposeEmailDialog(QDialog):
@@ -375,6 +430,49 @@ class EmailClient(QMainWindow):
                         pass
                     self.pop3_conn = None
 
+    def apply_theme(self, theme_name):
+        """应用指定的主题"""
+        if theme_name == "azure":
+            self.set_azure_theme()
+        elif theme_name == "light":
+            self.set_light_theme()
+        else:  # dark
+            self.set_dark_theme()
+
+    def set_light_theme(self):
+        """设置浅色主题"""
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(240, 240, 240))
+        palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.black)
+        palette.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(240, 240, 240))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.black)
+        palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.black)
+        palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
+        palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.black)
+        palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+        palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+        self.setPalette(palette)
+
+    def set_dark_theme(self):
+        """设置深色主题"""
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+        palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+        self.setPalette(palette)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Yanyn Email 0.14.1")
@@ -402,6 +500,16 @@ class EmailClient(QMainWindow):
         self.thread_running = False
         self.thread_cancel = False
         self.thread_lock = threading.Lock()
+
+        #系统托盘
+        self.setup_tray_icon()
+
+        # 加载保存的主题
+        saved_theme = self.settings.value("theme", "azure")
+        self.apply_theme(saved_theme)
+
+        # 设置字体
+        self.setFont(QFont("Microsoft YaHei", 10))
 
         # 现在可以安全地加载账户了
         if hasattr(self, 'account_list'):  # 确保 account_list 已初始化
@@ -504,7 +612,8 @@ class EmailClient(QMainWindow):
         toolbar.addAction(self.delete_btn)
 
         # 在工具栏添加设置按钮
-        self.settings_btn = QAction(QIcon.fromTheme("preferences-system"), "设置", self)
+        gear_icon = qta.icon("fa5s.cog")
+        self.settings_btn = QAction(gear_icon, "设置", self)
         self.settings_btn.triggered.connect(self.show_settings)
         toolbar.addAction(self.settings_btn)
 
@@ -543,7 +652,15 @@ class EmailClient(QMainWindow):
 
     def show_settings(self):
         dialog = SettingsDialog(self)
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            settings = dialog.get_settings()
+            self.settings.setValue("theme", settings["theme"])
+            self.settings.setValue("minimize_to_tray", settings["minimize_to_tray"])
+
+            # 应用新主题
+            self.apply_theme(settings["theme"])
+
+            QMessageBox.information(self, "成功", "设置已保存，部分设置可能需要重启应用才能生效")
 
     def load_accounts(self):
         self.account_list.clear()
@@ -1019,9 +1136,40 @@ class EmailClient(QMainWindow):
             self.refresh_emails()
 
     def closeEvent(self, event):
-        self.settings.sync()
-        event.accept()
+        """重写关闭事件，支持最小化到托盘"""
+        if self.settings.value("minimize_to_tray", True, type=bool):
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                "Yanyn Email",
+                "应用程序已最小化到系统托盘",
+                QIcon("icon.ico"),
+                2000
+            )
+        else:
+            self.settings.sync()
+            event.accept()
 
+    def setup_tray_icon(self):
+        """设置系统托盘图标"""
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon("icon.ico"))
+
+        # 创建托盘菜单
+        tray_menu = QMenu()
+
+        show_action = QAction("显示窗口", self)
+        show_action.triggered.connect(self.show)
+
+        exit_action = QAction("退出", self)
+        exit_action.triggered.connect(self.close)
+
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -1029,3 +1177,5 @@ if __name__ == "__main__":
     client = EmailClient()
     client.show()
     sys.exit(app.exec())
+
+
